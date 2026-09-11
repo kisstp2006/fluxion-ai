@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: BSL-1.0
+
+.{
+    .name = .fluxion_ai,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0x7e1bbbe035c7efd2, // Changing this has security and trust implications.
+    .dependencies = .{
+        // The examples look at the pictures that come back; the library
+        // never does. Lazy, and asked for only when this is the package being
+        // built, so a program that depends on fluxion-ai never fetches it.
+        .fluxion_image = .{
+            .url = "git+https://github.com/kisstp2006/fluxion-image#40c621cae37d3e916c4ef9b476eec2756c7b4633",
+            .hash = "fluxion_image-0.1.0-fyJkdS7vAABoCM9ka3MqX0VGd_L7My5Bqmg-BXQUtAPO",
+            .lazy = true,
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "examples",
+        "tests",
+        "README.md",
+        "LICENSE",
+    },
+}

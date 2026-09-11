@@ -1,0 +1,45 @@
+# Everything `zig build` produces: the install prefix (the examples, the
+# docs, and what the examples save - pictures, a test card, a video) and the
+# local build cache.
+zig-out/
+.zig-cache/
+zig-cache/
+
+# Where `zig fetch` puts a dependency's source for this checkout - here,
+# fluxion-image and fluxion-hash, for the examples. Re-fetched from the url
+# and hash in build.zig.zon.
+zig-pkg/
+
+# Ad-hoc builds that bypass `zig build` drop their output next to the source.
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.obj
+*.o
+*.lib
+*.a
+*.dll
+*.so
+*.so.*
+*.dylib
+*.wasm
+
+# A key has no business in a repository. The examples read theirs from the
+# environment; a file that sets one stays on the machine it was made on.
+.env
+.env.*
+
+# Editor and OS leavings.
+.vscode/
+.idea/
+.vs/
+.zed/
+.cache/
+*.swp
+*.swo
+*~
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
