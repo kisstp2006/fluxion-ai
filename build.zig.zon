@@ -10,8 +10,8 @@
         // never does. Lazy, and asked for only when this is the package being
         // built, so a program that depends on fluxion-ai never fetches it.
         .fluxion_image = .{
-            .url = "git+https://github.com/kisstp2006/fluxion-image#40c621cae37d3e916c4ef9b476eec2756c7b4633",
-            .hash = "fluxion_image-0.1.0-fyJkdS7vAABoCM9ka3MqX0VGd_L7My5Bqmg-BXQUtAPO",
+            .url = "git+https://github.com/kisstp2006/fluxion-image#79463ef201f11e15ada014467c0ad1d58b2a882d",
+            .hash = "fluxion_image-0.1.0-fyJkdS7vAAB1p43VSutvpxQB32hIcvJb3fGSZbo_qeha",
             .lazy = true,
         },
     },
