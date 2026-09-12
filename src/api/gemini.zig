@@ -356,7 +356,7 @@ fn writeImagen(b: *json.Body, request: ImageRequest, extra: ?*Object) !void {
     try b.w.endArray();
 
     try b.w.key("parameters");
-    var parameters: json.Body = try .begin(b.gpa, b.w, extra);
+    var parameters: json.Body = try .begin(b.w, extra);
     try parameters.field("sampleCount", request.count);
     try parameters.field("aspectRatio", request.aspect_ratio);
     try parameters.field("imageSize", request.size);
@@ -397,7 +397,7 @@ fn writeVeo(b: *json.Body, request: VideoRequest, extra: ?*Object) !void {
     try b.w.endArray();
 
     try b.w.key("parameters");
-    var parameters: json.Body = try .begin(b.gpa, b.w, extra);
+    var parameters: json.Body = try .begin(b.w, extra);
     try parameters.field("aspectRatio", request.aspect_ratio);
     try parameters.field("durationSeconds", request.seconds);
     try parameters.field("resolution", request.resolution);
@@ -461,7 +461,7 @@ test "the generateContent body" {
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     var w: Writer = .init(&out.writer, .{});
-    var b: json.Body = try .begin(gpa, &w, null);
+    var b: json.Body = try .begin(&w, null);
     try writeChat(&b, .{
         .model = "gemini-3.5-flash",
         .system = "Be brief.",
@@ -486,7 +486,7 @@ test "Imagen and Veo put extra into parameters" {
     var w: Writer = .init(&out.writer, .{});
 
     const extra = try json.parseExtra(arena.allocator(), "{\"personGeneration\":\"allow_adult\"}");
-    var b: json.Body = try .begin(gpa, &w, null);
+    var b: json.Body = try .begin(&w, null);
     try writeImagen(&b, .{ .model = "imagen-4.0-generate-001", .prompt = "a fox", .count = 2, .aspect_ratio = "16:9" }, extra);
     try b.end();
     try std.testing.expectEqualStrings(
@@ -495,7 +495,7 @@ test "Imagen and Veo put extra into parameters" {
 
     out.clearRetainingCapacity();
     w = .init(&out.writer, .{});
-    b = try .begin(gpa, &w, null);
+    b = try .begin(&w, null);
     try writeVeo(&b, .{ .model = "veo-3.1-generate-preview", .prompt = "waves", .seconds = 8, .first_frame = .fromBytes("\x89PNG\r\n\x1a\n") }, null);
     try b.end();
     try std.testing.expectEqualStrings(

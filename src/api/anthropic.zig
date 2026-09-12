@@ -265,7 +265,7 @@ test "the messages body: system apart, pictures before words, max_tokens always"
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     var w: Writer = .init(&out.writer, .{});
-    var b: json.Body = try .begin(gpa, &w, null);
+    var b: json.Body = try .begin(&w, null);
     try writeChat(&b, .{
         .model = "claude-sonnet-5",
         .system = "Be brief.",

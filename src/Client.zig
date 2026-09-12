@@ -327,7 +327,7 @@ pub fn extraMembers(c: *Client, a: Allocator, extra: ?[]const u8) !?*fluxion_jso
 /// `extra` merged in.
 pub fn jsonBody(c: *Client, a: Allocator, extra: ?[]const u8, comptime write: anytype, args: anytype) ![]const u8 {
     const members = try c.extraMembers(a, extra);
-    return json.bodyText(a, c.gpa, members, write, args) catch error.OutOfMemory;
+    return json.bodyText(a, members, write, args) catch error.OutOfMemory;
 }
 
 pub const JsonAnswer = struct {

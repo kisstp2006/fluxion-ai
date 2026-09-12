@@ -516,7 +516,7 @@ test "the chat body, as OpenAI and as a compatible server" {
     var w: Writer = .init(&out.writer, .{});
     const openai_provider: Provider = .openai("k");
     const deepseek_provider: Provider = .deepseek("k");
-    var b: json.Body = try .begin(gpa, &w, null);
+    var b: json.Body = try .begin(&w, null);
     try writeChat(&b, &openai_provider, request, true);
     try b.end();
     try std.testing.expectEqualStrings(
@@ -525,7 +525,7 @@ test "the chat body, as OpenAI and as a compatible server" {
 
     out.clearRetainingCapacity();
     w = .init(&out.writer, .{});
-    b = try .begin(gpa, &w, null);
+    b = try .begin(&w, null);
     try writeChat(&b, &deepseek_provider, .{ .model = "deepseek-flash", .messages = &.{.user("hi")}, .max_tokens = 5 }, false);
     try b.end();
     try std.testing.expectEqualStrings(

@@ -20,8 +20,6 @@ const Value = fluxion_json.Value;
 const Object = fluxion_json.Object;
 const Writer = fluxion_json.Writer;
 
-const media = @import("media.zig");
-
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
@@ -87,24 +85,23 @@ pub fn parseExtra(arena: Allocator, extra: ?[]const u8) ExtraError!?*Object {
 }
 
 /// The text of a request body, in `a`: `write(&body, args...)` between the
-/// braces, with `extra` merged in. `gpa` holds what is needed only while it
-/// is written.
-pub fn bodyText(a: Allocator, gpa: Allocator, extra: ?*Object, comptime write: anytype, args: anytype) Body.Error![]const u8 {
+/// braces, with `extra` merged in.
+pub fn bodyText(a: Allocator, extra: ?*Object, comptime write: anytype, args: anytype) Body.Error![]const u8 {
     // Written twice, to count and then into exactly that much of `a`: a body
     // with a picture in it is megabytes, and grown in an arena it would leave
     // every smaller copy behind.
     var counter: Io.Writer.Discarding = .init(&.{});
-    try writeBody(gpa, &counter.writer, extra, write, args);
+    try writeBody(&counter.writer, extra, write, args);
     const text = try a.alloc(u8, @intCast(counter.fullCount()));
     var out: Io.Writer = .fixed(text);
-    try writeBody(gpa, &out, extra, write, args);
+    try writeBody(&out, extra, write, args);
     std.debug.assert(out.end == text.len);
     return text;
 }
 
-fn writeBody(gpa: Allocator, out: *Io.Writer, extra: ?*Object, comptime write: anytype, args: anytype) Body.Error!void {
+fn writeBody(out: *Io.Writer, extra: ?*Object, comptime write: anytype, args: anytype) Body.Error!void {
     var writer: Writer = .init(out, .{});
-    var body: Body = try .begin(gpa, &writer, extra);
+    var body: Body = try .begin(&writer, extra);
     try @call(.auto, write, .{&body} ++ args);
     try body.end();
 }
@@ -116,14 +113,12 @@ fn writeBody(gpa: Allocator, out: *Io.Writer, extra: ?*Object, comptime write: a
 pub const Body = struct {
     w: *Writer,
     extra: ?*Object,
-    /// Holds a picture's base64 text while it is written.
-    gpa: Allocator,
 
     pub const Error = Writer.Error;
 
-    pub fn begin(gpa: Allocator, w: *Writer, extra: ?*Object) Error!Body {
+    pub fn begin(w: *Writer, extra: ?*Object) Error!Body {
         try w.beginObject();
-        return .{ .w = w, .extra = extra, .gpa = gpa };
+        return .{ .w = w, .extra = extra };
     }
 
     /// The members of `extra`, then the closing brace.
@@ -174,17 +169,20 @@ pub const Body = struct {
         try b.encoded(&.{ "data:", mime_type, ";base64," }, bytes);
     }
 
-    /// `prefix`, then `bytes` in base64, as one string value. fluxion-json
-    /// takes a string whole, so the text is put together first, and let go
-    /// as soon as it is written.
+    /// `prefix`, then `bytes` in base64, as one string value written a few
+    /// kilobytes at a time: a picture is megabytes of it.
     fn encoded(b: *Body, prefix: []const []const u8, bytes: []const u8) Error!void {
-        var len = std.base64.standard.Encoder.calcSize(bytes.len);
-        for (prefix) |part| len += part.len;
-        var text: Io.Writer.Allocating = try .initCapacity(b.gpa, len);
-        defer text.deinit();
-        for (prefix) |part| try text.writer.writeAll(part);
-        try media.writeBase64(&text.writer, bytes);
-        try b.w.writeString(text.written());
+        try b.w.beginString();
+        for (prefix) |part| try b.w.writeStringPart(part);
+        var chunk: [4096]u8 = undefined;
+        var rest = bytes;
+        while (rest.len > 0) {
+            // 3072 bytes in, exactly 4096 characters out, no padding until the end.
+            const n = @min(rest.len, chunk.len / 4 * 3);
+            try b.w.writeStringPart(std.base64.standard.Encoder.encode(&chunk, rest[0..n]));
+            rest = rest[n..];
+        }
+        try b.w.endString();
     }
 };
 
@@ -231,7 +229,7 @@ test Body {
     var w: Writer = .init(&out.writer, .{});
 
     const extra = try parseExtra(arena.allocator(), "{\"temperature\":0.5,\"seed\":7}");
-    var b: Body = try .begin(gpa, &w, extra);
+    var b: Body = try .begin(&w, extra);
     try b.field("model", "m");
     try b.field("temperature", @as(f32, 1.0)); // overridden: `extra` has its own
     try b.field("top_p", @as(?f32, null)); // not set: not sent
@@ -258,7 +256,7 @@ test bodyText {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const text = try bodyText(a, std.testing.allocator, try parseExtra(a, "{\"n\":2}"), struct {
+    const text = try bodyText(a, try parseExtra(a, "{\"n\":2}"), struct {
         fn write(b: *Body, picture: []const u8) Body.Error!void {
             try b.field("model", "m");
             try b.w.key("data");
