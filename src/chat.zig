@@ -125,7 +125,7 @@ pub const Chat = struct {
     id: []const u8 = "",
     /// The response body as it came. Tool calls, citations, log
     /// probabilities: everything this struct does not carry is in here, to
-    /// be read with `std.json`.
+    /// be read with `ai.json`.
     raw: []const u8 = "",
 
     pub fn deinit(chat: *Chat) void {

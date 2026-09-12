@@ -6,8 +6,8 @@ zig-out/
 zig-cache/
 
 # Where `zig fetch` puts a dependency's source for this checkout - here,
-# fluxion-image and fluxion-hash, for the examples. Re-fetched from the url
-# and hash in build.zig.zon.
+# fluxion-json, and fluxion-image and fluxion-hash for the examples.
+# Re-fetched from the url and hash in build.zig.zon.
 zig-pkg/
 
 # Ad-hoc builds that bypass `zig build` drop their output next to the source.

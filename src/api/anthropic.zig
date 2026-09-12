@@ -13,7 +13,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Value = std.json.Value;
+const Value = @import("fluxion_json").Value;
+const Writer = @import("fluxion_json").Writer;
 
 const Client = @import("../Client.zig");
 const ChatStream = @import("../ChatStream.zig");
@@ -67,21 +68,21 @@ fn writeChat(b: *json.Body, request: ChatRequest, stream: bool) !void {
     if (system_messages == 0) {
         try b.field("system", request.system);
     } else if (try b.key("system")) {
-        try b.s.beginArray();
+        try b.w.beginArray();
         if (request.system) |system| try textBlock(b, system);
         for (request.messages) |message| {
             if (message.role == .system) try textBlock(b, message.text);
         }
-        try b.s.endArray();
+        try b.w.endArray();
     }
 
     if (try b.key("messages")) {
-        try b.s.beginArray();
+        try b.w.beginArray();
         for (request.messages) |message| {
             if (message.role == .system) continue;
             try writeMessage(b, message);
         }
-        try b.s.endArray();
+        try b.w.endArray();
     }
     try b.field("temperature", request.temperature);
     try b.field("top_p", request.top_p);
@@ -90,30 +91,30 @@ fn writeChat(b: *json.Body, request: ChatRequest, stream: bool) !void {
 }
 
 fn textBlock(b: *json.Body, text: []const u8) !void {
-    try b.s.beginObject();
+    try b.w.beginObject();
     try b.plain("type", "text");
     try b.plain("text", text);
-    try b.s.endObject();
+    try b.w.endObject();
 }
 
 fn writeMessage(b: *json.Body, message: Message) !void {
-    try b.s.beginObject();
+    try b.w.beginObject();
     try b.plain("role", @tagName(message.role));
     if (message.images.len == 0) {
         try b.plain("content", message.text);
     } else {
-        try b.s.objectField("content");
-        try b.s.beginArray();
+        try b.w.key("content");
+        try b.w.beginArray();
         for (message.images) |image| {
-            try b.s.beginObject();
+            try b.w.beginObject();
             try b.plain("type", "image");
-            try b.s.objectField("source");
-            try b.s.beginObject();
+            try b.w.key("source");
+            try b.w.beginObject();
             switch (image) {
                 .file => |file| {
                     try b.plain("type", "base64");
                     try b.plain("media_type", file.mime_type);
-                    try b.s.objectField("data");
+                    try b.w.key("data");
                     try b.base64(file.bytes);
                 },
                 .url => |url| {
@@ -121,49 +122,49 @@ fn writeMessage(b: *json.Body, message: Message) !void {
                     try b.plain("url", url);
                 },
             }
-            try b.s.endObject();
-            try b.s.endObject();
+            try b.w.endObject();
+            try b.w.endObject();
         }
         if (message.text.len > 0) try textBlock(b, message.text);
-        try b.s.endArray();
+        try b.w.endArray();
     }
-    try b.s.endObject();
+    try b.w.endObject();
 }
 
 pub fn parseChat(a: Allocator, root: Value, out: *Chat) error{ InvalidResponse, OutOfMemory }!void {
-    const content = json.at(root, .{"content"}) orelse return error.InvalidResponse;
+    const content = root.get("content");
     if (content != .array) return error.InvalidResponse;
 
     var text: std.ArrayList(u8) = .empty;
     var reasoning: std.ArrayList(u8) = .empty;
-    for (content.array.items) |block| {
-        const kind = json.string(json.at(block, .{"type"})) orelse continue;
+    for (content.items()) |block| {
+        const kind = block.get("type").asString() orelse continue;
         if (std.mem.eql(u8, kind, "text")) {
-            try text.appendSlice(a, json.string(json.at(block, .{"text"})) orelse "");
+            try text.appendSlice(a, block.get("text").asString() orelse "");
         } else if (std.mem.eql(u8, kind, "thinking")) {
             if (reasoning.items.len > 0) try reasoning.appendSlice(a, "\n\n");
-            try reasoning.appendSlice(a, json.string(json.at(block, .{"thinking"})) orelse "");
+            try reasoning.appendSlice(a, block.get("thinking").asString() orelse "");
         }
     }
     out.text = text.items;
     out.reasoning = reasoning.items;
-    out.finish_reason = json.string(json.at(root, .{"stop_reason"})) orelse "";
+    out.finish_reason = root.get("stop_reason").asString() orelse "";
     out.finish = finishOf(out.finish_reason);
     out.usage = .{
-        .input_tokens = inputTokens(json.at(root, .{"usage"})),
-        .output_tokens = json.count(json.at(root, .{ "usage", "output_tokens" })),
+        .input_tokens = inputTokens(root.get("usage")),
+        .output_tokens = json.count(root.at("/usage/output_tokens")),
     };
-    out.model = json.string(json.at(root, .{"model"})) orelse "";
-    out.id = json.string(json.at(root, .{"id"})) orelse "";
+    out.model = root.get("model").asString() orelse "";
+    out.id = root.get("id").asString() orelse "";
 }
 
 /// Anthropic counts cached input apart from the rest. Everything that was
 /// read is the sum.
-fn inputTokens(usage: ?Value) ?u64 {
-    const plain = json.count(json.at(usage, .{"input_tokens"})) orelse return null;
+fn inputTokens(usage: Value) ?u64 {
+    const plain = json.count(usage.get("input_tokens")) orelse return null;
     return plain +
-        (json.count(json.at(usage, .{"cache_creation_input_tokens"})) orelse 0) +
-        (json.count(json.at(usage, .{"cache_read_input_tokens"})) orelse 0);
+        (json.count(usage.get("cache_creation_input_tokens")) orelse 0) +
+        (json.count(usage.get("cache_read_input_tokens")) orelse 0);
 }
 
 pub fn finishOf(reason: []const u8) Finish {
@@ -187,44 +188,44 @@ pub fn streamEvent(s: *ChatStream, a: Allocator, event: sse.Event) !void {
         error.OutOfMemory => return error.OutOfMemory,
         error.InvalidResponse => return s.fail(error.InvalidResponse, "a stream event that is not JSON: {s}", .{data}),
     };
-    const kind = json.string(json.at(root, .{"type"})) orelse event.name;
+    const kind = root.get("type").asString() orelse event.name;
     const eql = std.mem.eql;
 
     if (eql(u8, kind, "message_start")) {
-        const message = json.at(root, .{"message"});
-        if (json.string(json.at(message, .{"id"}))) |id| try s.setId(id);
-        if (json.string(json.at(message, .{"model"}))) |model| try s.setModel(model);
-        s.usage.input_tokens = inputTokens(json.at(message, .{"usage"}));
-        s.usage.output_tokens = json.count(json.at(message, .{ "usage", "output_tokens" }));
+        const message = root.get("message");
+        if (message.get("id").asString()) |id| try s.setId(id);
+        if (message.get("model").asString()) |model| try s.setModel(model);
+        s.usage.input_tokens = inputTokens(message.get("usage"));
+        s.usage.output_tokens = json.count(message.at("/usage/output_tokens"));
     } else if (eql(u8, kind, "content_block_start")) {
-        const block = json.at(root, .{"content_block"});
-        const block_kind = json.string(json.at(block, .{"type"})) orelse "";
+        const block = root.get("content_block");
+        const block_kind = block.get("type").asString() orelse "";
         if (eql(u8, block_kind, "text")) {
-            const text = json.string(json.at(block, .{"text"})) orelse "";
+            const text = block.get("text").asString() orelse "";
             if (text.len > 0) try s.emit(.{ .text = text });
         } else if (eql(u8, block_kind, "thinking")) {
-            const thinking = json.string(json.at(block, .{"thinking"})) orelse "";
+            const thinking = block.get("thinking").asString() orelse "";
             if (thinking.len > 0) try s.emit(.{ .reasoning = thinking });
         }
     } else if (eql(u8, kind, "content_block_delta")) {
-        const delta = json.at(root, .{"delta"});
-        const delta_kind = json.string(json.at(delta, .{"type"})) orelse "";
+        const delta = root.get("delta");
+        const delta_kind = delta.get("type").asString() orelse "";
         if (eql(u8, delta_kind, "text_delta")) {
-            const text = json.string(json.at(delta, .{"text"})) orelse "";
+            const text = delta.get("text").asString() orelse "";
             if (text.len > 0) try s.emit(.{ .text = text });
         } else if (eql(u8, delta_kind, "thinking_delta")) {
-            const thinking = json.string(json.at(delta, .{"thinking"})) orelse "";
+            const thinking = delta.get("thinking").asString() orelse "";
             if (thinking.len > 0) try s.emit(.{ .reasoning = thinking });
         }
     } else if (eql(u8, kind, "message_delta")) {
-        if (json.string(json.at(root, .{ "delta", "stop_reason" }))) |reason| try s.setFinish(reason, finishOf(reason));
-        const usage = json.at(root, .{"usage"});
-        if (json.count(json.at(usage, .{"output_tokens"}))) |n| s.usage.output_tokens = n;
+        if (root.at("/delta/stop_reason").asString()) |reason| try s.setFinish(reason, finishOf(reason));
+        const usage = root.get("usage");
+        if (json.count(usage.get("output_tokens"))) |n| s.usage.output_tokens = n;
         if (inputTokens(usage)) |n| s.usage.input_tokens = n;
     } else if (eql(u8, kind, "message_stop")) {
         s.done = true;
     } else if (eql(u8, kind, "error")) {
-        const error_kind = json.string(json.at(root, .{ "error", "type" })) orelse "";
+        const error_kind = root.at("/error/type").asString() orelse "";
         return s.fail(errorOfKind(error_kind), "{s}", .{json.errorMessage(root) orelse data});
     }
     // `ping`, `content_block_stop`, signatures and tool input: nothing to hand on.
@@ -252,9 +253,9 @@ pub fn models(c: *Client, a: Allocator, out: *Client.Models) !void {
     const answer = try c.exchangeJson(a, .{ .url = try c.endpoint(a, "/models?limit=1000") });
     out.raw = answer.raw;
     var list: std.ArrayList(Client.Model) = .empty;
-    for (json.array(json.at(answer.root, .{"data"}))) |item| {
-        const id = json.string(json.at(item, .{"id"})) orelse continue;
-        try list.append(a, .{ .id = id, .name = json.string(json.at(item, .{"display_name"})) orelse id });
+    for (answer.root.get("data").items()) |item| {
+        const id = item.get("id").asString() orelse continue;
+        try list.append(a, .{ .id = id, .name = item.get("display_name").asString() orelse id });
     }
     out.items = list.items;
 }
@@ -263,7 +264,8 @@ test "the messages body: system apart, pictures before words, max_tokens always"
     const gpa = std.testing.allocator;
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    var b: json.Body = try .begin(&out.writer, null);
+    var w: Writer = .init(&out.writer, .{});
+    var b: json.Body = try .begin(gpa, &w, null);
     try writeChat(&b, .{
         .model = "claude-sonnet-5",
         .system = "Be brief.",

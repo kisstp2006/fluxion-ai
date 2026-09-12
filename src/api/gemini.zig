@@ -11,7 +11,9 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Value = std.json.Value;
+const Value = @import("fluxion_json").Value;
+const Object = @import("fluxion_json").Object;
+const Writer = @import("fluxion_json").Writer;
 
 const Client = @import("../Client.zig");
 const ChatStream = @import("../ChatStream.zig");
@@ -58,7 +60,7 @@ pub fn chat(c: *Client, a: Allocator, request: ChatRequest, out: *Chat) !void {
 
     var harvest: Harvest = .{};
     harvest.gather(a, answer.root) catch |err| return c.invalid(err, answer.root, "an answer that does not parse");
-    if (json.at(answer.root, .{"candidates"}) == null and harvest.finish_reason.len == 0)
+    if (answer.root.get("candidates") == .null and harvest.finish_reason.len == 0)
         return c.invalid(error.InvalidResponse, answer.root, "an answer with no candidates in it");
     out.text = harvest.text.items;
     out.reasoning = harvest.reasoning.items;
@@ -84,76 +86,76 @@ pub fn streamOptions(c: *Client, a: Allocator, request: ChatRequest) !transport.
 
 fn writeChat(b: *json.Body, request: ChatRequest) !void {
     if (try b.key("contents")) {
-        try b.s.beginArray();
+        try b.w.beginArray();
         for (request.messages) |message| {
             if (message.role == .system) continue;
-            try b.s.beginObject();
+            try b.w.beginObject();
             try b.plain("role", if (message.role == .assistant) "model" else "user");
-            try b.s.objectField("parts");
-            try b.s.beginArray();
+            try b.w.key("parts");
+            try b.w.beginArray();
             for (message.images) |image| try imagePart(b, image);
             if (message.text.len > 0 or message.images.len == 0) try textPart(b, message.text);
-            try b.s.endArray();
-            try b.s.endObject();
+            try b.w.endArray();
+            try b.w.endObject();
         }
-        try b.s.endArray();
+        try b.w.endArray();
     }
 
     var has_system = request.system != null;
     for (request.messages) |message| has_system = has_system or message.role == .system;
     if (has_system and try b.key("systemInstruction")) {
-        try b.s.beginObject();
-        try b.s.objectField("parts");
-        try b.s.beginArray();
+        try b.w.beginObject();
+        try b.w.key("parts");
+        try b.w.beginArray();
         if (request.system) |system| try textPart(b, system);
         for (request.messages) |message| {
             if (message.role == .system) try textPart(b, message.text);
         }
-        try b.s.endArray();
-        try b.s.endObject();
+        try b.w.endArray();
+        try b.w.endObject();
     }
 
     const configured = request.max_tokens != null or request.temperature != null or
         request.top_p != null or request.stop.len > 0;
     if (configured and try b.key("generationConfig")) {
-        try b.s.beginObject();
+        try b.w.beginObject();
         try b.plain("maxOutputTokens", request.max_tokens);
         try b.plain("temperature", request.temperature);
         try b.plain("topP", request.top_p);
         if (request.stop.len > 0) try b.plain("stopSequences", request.stop);
-        try b.s.endObject();
+        try b.w.endObject();
     }
 }
 
 fn textPart(b: *json.Body, text: []const u8) !void {
-    try b.s.beginObject();
+    try b.w.beginObject();
     try b.plain("text", text);
-    try b.s.endObject();
+    try b.w.endObject();
 }
 
 fn imagePart(b: *json.Body, image: Image) !void {
-    try b.s.beginObject();
+    try b.w.beginObject();
     switch (image) {
         .file => |file| try inlineData(b, file),
         .url => |url| {
-            try b.s.objectField("fileData");
-            try b.s.beginObject();
+            try b.w.key("fileData");
+            try b.w.beginObject();
             try b.plain("fileUri", url);
-            try b.s.endObject();
+            try b.w.endObject();
         },
     }
-    try b.s.endObject();
+    try b.w.endObject();
 }
 
 /// `"inlineData": {"mimeType": ..., "data": ...}` - the field and its
 /// value, inside an object the caller opened.
 fn inlineData(b: *json.Body, file: media.Media) !void {
-    try b.s.objectField("inlineData");
-    try b.s.beginObject();
+    try b.w.key("inlineData");
+    try b.w.beginObject();
     try b.plain("mimeType", file.mime_type);
-    try b.s.objectField("data");
+    try b.w.key("data");
     try b.base64(file.bytes);
-    try b.s.endObject();
+    try b.w.endObject();
 }
 
 /// What one `GenerateContentResponse` holds, gathered from the first
@@ -168,34 +170,36 @@ const Harvest = struct {
     id: []const u8 = "",
 
     fn gather(h: *Harvest, a: Allocator, root: Value) error{ InvalidResponse, OutOfMemory }!void {
-        const candidate = json.at(root, .{ "candidates", 0 });
-        for (json.array(json.at(candidate, .{ "content", "parts" }))) |part| {
-            if (json.string(json.at(part, .{"text"}))) |text| {
-                const thought = json.boolean(json.at(part, .{"thought"})) orelse false;
+        const candidate = root.at("/candidates/0");
+        for (candidate.at("/content/parts").items()) |part| {
+            if (part.get("text").asString()) |text| {
+                const thought = part.get("thought").asBool() orelse false;
                 try (if (thought) &h.reasoning else &h.text).appendSlice(a, text);
-            } else if (json.at(part, .{"inlineData"}) orelse json.at(part, .{"inline_data"})) |data| {
-                const b64 = json.string(json.at(data, .{"data"})) orelse continue;
-                const bytes = media.decodeBase64(a, b64) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.InvalidBase64 => return error.InvalidResponse,
-                };
-                const claimed = json.string(json.at(data, .{"mimeType"})) orelse json.string(json.at(data, .{"mime_type"}));
-                try h.images.append(a, .{ .bytes = bytes, .mime_type = media.sniff(bytes) orelse claimed orelse "application/octet-stream" });
+                continue;
             }
+            var data = part.get("inlineData");
+            if (data == .null) data = part.get("inline_data");
+            const b64 = data.get("data").asString() orelse continue;
+            const bytes = media.decodeBase64(a, b64) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidBase64 => return error.InvalidResponse,
+            };
+            const claimed = data.get("mimeType").asString() orelse data.get("mime_type").asString();
+            try h.images.append(a, .{ .bytes = bytes, .mime_type = media.sniff(bytes) orelse claimed orelse "application/octet-stream" });
         }
-        if (json.string(json.at(candidate, .{"finishReason"}))) |reason| h.finish_reason = reason;
+        if (candidate.get("finishReason").asString()) |reason| h.finish_reason = reason;
         // Blocked before a word was written: no candidate, and a reason why.
-        if (json.string(json.at(root, .{ "promptFeedback", "blockReason" }))) |reason| h.finish_reason = reason;
+        if (root.at("/promptFeedback/blockReason").asString()) |reason| h.finish_reason = reason;
 
-        const usage = json.at(root, .{"usageMetadata"});
-        if (usage != null) {
-            h.usage.input_tokens = json.count(json.at(usage, .{"promptTokenCount"}));
-            const answer = json.count(json.at(usage, .{"candidatesTokenCount"}));
-            const thoughts = json.count(json.at(usage, .{"thoughtsTokenCount"}));
+        const usage = root.get("usageMetadata");
+        if (usage != .null) {
+            h.usage.input_tokens = json.count(usage.get("promptTokenCount"));
+            const answer = json.count(usage.get("candidatesTokenCount"));
+            const thoughts = json.count(usage.get("thoughtsTokenCount"));
             h.usage.output_tokens = if (answer == null and thoughts == null) null else (answer orelse 0) + (thoughts orelse 0);
         }
-        if (json.string(json.at(root, .{"modelVersion"}))) |model| h.model = model;
-        if (json.string(json.at(root, .{"responseId"}))) |id| h.id = id;
+        if (root.get("modelVersion").asString()) |model| h.model = model;
+        if (root.get("responseId").asString()) |id| h.id = id;
     }
 };
 
@@ -219,7 +223,7 @@ pub fn streamEvent(s: *ChatStream, a: Allocator, event: sse.Event) !void {
         error.OutOfMemory => return error.OutOfMemory,
         error.InvalidResponse => return s.fail(error.InvalidResponse, "a stream event that is not JSON: {s}", .{data}),
     };
-    if (json.at(root, .{"error"}) != null) {
+    if (root.get("error") != .null) {
         return s.fail(error.GenerationFailed, "{s}", .{json.errorMessage(root) orelse data});
     }
     var harvest: Harvest = .{};
@@ -282,32 +286,32 @@ fn sum(a: ?u64, b: ?u64) ?u64 {
 
 fn writeDrawing(b: *json.Body, request: ImageRequest) !void {
     if (try b.key("contents")) {
-        try b.s.beginArray();
-        try b.s.beginObject();
+        try b.w.beginArray();
+        try b.w.beginObject();
         try b.plain("role", "user");
-        try b.s.objectField("parts");
-        try b.s.beginArray();
+        try b.w.key("parts");
+        try b.w.beginArray();
         for (request.references) |reference| {
-            try b.s.beginObject();
+            try b.w.beginObject();
             try inlineData(b, reference);
-            try b.s.endObject();
+            try b.w.endObject();
         }
         try textPart(b, request.prompt);
-        try b.s.endArray();
-        try b.s.endObject();
-        try b.s.endArray();
+        try b.w.endArray();
+        try b.w.endObject();
+        try b.w.endArray();
     }
     if (try b.key("generationConfig")) {
-        try b.s.beginObject();
+        try b.w.beginObject();
         try b.plain("responseModalities", &[_][]const u8{ "TEXT", "IMAGE" });
         if (request.aspect_ratio != null or request.size != null) {
-            try b.s.objectField("imageConfig");
-            try b.s.beginObject();
+            try b.w.key("imageConfig");
+            try b.w.beginObject();
             try b.plain("aspectRatio", request.aspect_ratio);
             try b.plain("imageSize", request.size);
-            try b.s.endObject();
+            try b.w.endObject();
         }
-        try b.s.endObject();
+        try b.w.endObject();
     }
 }
 
@@ -323,16 +327,16 @@ fn imagen(c: *Client, a: Allocator, request: ImageRequest, out: *Images) !void {
     out.raw = answer.raw;
     var list: std.ArrayList(GeneratedImage) = .empty;
     var filtered: ?[]const u8 = null;
-    for (json.array(json.at(answer.root, .{"predictions"}))) |prediction| {
-        const b64 = json.string(json.at(prediction, .{"bytesBase64Encoded"})) orelse {
-            filtered = json.string(json.at(prediction, .{"raiFilteredReason"})) orelse filtered;
+    for (answer.root.get("predictions").items()) |prediction| {
+        const b64 = prediction.get("bytesBase64Encoded").asString() orelse {
+            filtered = prediction.get("raiFilteredReason").asString() orelse filtered;
             continue;
         };
         const bytes = media.decodeBase64(a, b64) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.InvalidBase64 => return c.invalid(error.InvalidResponse, answer.root, "a picture that is not base64"),
         };
-        const claimed = json.string(json.at(prediction, .{"mimeType"}));
+        const claimed = prediction.get("mimeType").asString();
         try list.append(a, .{ .bytes = bytes, .mime_type = media.sniff(bytes) orelse claimed orelse "image/png" });
     }
     if (list.items.len == 0) {
@@ -343,22 +347,20 @@ fn imagen(c: *Client, a: Allocator, request: ImageRequest, out: *Images) !void {
 
 /// Imagen's `predict`: the prompt as the one instance, and everything else,
 /// `extra` included, as parameters.
-fn writeImagen(b: *json.Body, request: ImageRequest, extra: ?std.json.ObjectMap) !void {
-    try b.s.objectField("instances");
-    try b.s.beginArray();
-    try b.s.beginObject();
+fn writeImagen(b: *json.Body, request: ImageRequest, extra: ?*Object) !void {
+    try b.w.key("instances");
+    try b.w.beginArray();
+    try b.w.beginObject();
     try b.plain("prompt", request.prompt);
-    try b.s.endObject();
-    try b.s.endArray();
+    try b.w.endObject();
+    try b.w.endArray();
 
-    try b.s.objectField("parameters");
-    try b.s.beginWriteRaw();
-    var parameters: json.Body = try .begin(b.s.writer, extra);
+    try b.w.key("parameters");
+    var parameters: json.Body = try .begin(b.gpa, b.w, extra);
     try parameters.field("sampleCount", request.count);
     try parameters.field("aspectRatio", request.aspect_ratio);
     try parameters.field("imageSize", request.size);
     try parameters.end();
-    b.s.endWriteRaw();
 }
 
 // ---------------------------------------------------------------------------
@@ -380,29 +382,27 @@ pub fn startVideo(c: *Client, a: Allocator, request: VideoRequest, out: *Video) 
     try parseOperation(c, answer.root, out);
 }
 
-fn writeVeo(b: *json.Body, request: VideoRequest, extra: ?std.json.ObjectMap) !void {
-    try b.s.objectField("instances");
-    try b.s.beginArray();
-    try b.s.beginObject();
+fn writeVeo(b: *json.Body, request: VideoRequest, extra: ?*Object) !void {
+    try b.w.key("instances");
+    try b.w.beginArray();
+    try b.w.beginObject();
     try b.plain("prompt", request.prompt);
     if (request.first_frame) |frame| {
-        try b.s.objectField("image");
-        try b.s.beginObject();
+        try b.w.key("image");
+        try b.w.beginObject();
         try inlineData(b, frame.file);
-        try b.s.endObject();
+        try b.w.endObject();
     }
-    try b.s.endObject();
-    try b.s.endArray();
+    try b.w.endObject();
+    try b.w.endArray();
 
-    try b.s.objectField("parameters");
-    try b.s.beginWriteRaw();
-    var parameters: json.Body = try .begin(b.s.writer, extra);
+    try b.w.key("parameters");
+    var parameters: json.Body = try .begin(b.gpa, b.w, extra);
     try parameters.field("aspectRatio", request.aspect_ratio);
     try parameters.field("durationSeconds", request.seconds);
     try parameters.field("resolution", request.resolution);
     try parameters.field("negativePrompt", request.negative_prompt);
     try parameters.end();
-    b.s.endWriteRaw();
 }
 
 pub fn videoStatus(c: *Client, a: Allocator, id: []const u8, out: *Video) !void {
@@ -413,28 +413,28 @@ pub fn videoStatus(c: *Client, a: Allocator, id: []const u8, out: *Video) !void 
 }
 
 fn parseOperation(c: *Client, root: Value, out: *Video) !void {
-    out.id = json.string(json.at(root, .{"name"})) orelse
+    out.id = root.get("name").asString() orelse
         return c.invalid(error.InvalidResponse, root, "an operation with no name");
-    const done = json.boolean(json.at(root, .{"done"})) orelse false;
-    if (json.at(root, .{"error"}) != null) {
+    const done = root.get("done").asBool() orelse false;
+    if (root.get("error") != .null) {
         out.status = .failed;
         out.message = json.errorMessage(root) orelse "the operation failed";
         return;
     }
     if (!done) {
-        out.status = if (json.at(root, .{"metadata"}) != null) .in_progress else .queued;
+        out.status = if (root.get("metadata") != .null) .in_progress else .queued;
         return;
     }
-    const response = json.at(root, .{"response"});
-    const uri = json.string(json.at(response, .{ "generateVideoResponse", "generatedSamples", 0, "video", "uri" })) orelse
-        json.string(json.at(response, .{ "generatedVideos", 0, "video", "uri" })) orelse
-        json.string(json.at(response, .{ "videos", 0, "uri" }));
+    const response = root.get("response");
+    const uri = response.at("/generateVideoResponse/generatedSamples/0/video/uri").asString() orelse
+        response.at("/generatedVideos/0/video/uri").asString() orelse
+        response.at("/videos/0/uri").asString();
     if (uri) |u| {
         out.status = .completed;
         out.url = u;
     } else {
         out.status = .failed;
-        out.message = json.string(json.at(response, .{ "generateVideoResponse", "raiMediaFilteredReasons", 0 })) orelse
+        out.message = response.at("/generateVideoResponse/raiMediaFilteredReasons/0").asString() orelse
             "the operation finished without a video";
     }
 }
@@ -447,11 +447,11 @@ pub fn models(c: *Client, a: Allocator, out: *Client.Models) !void {
     const answer = try c.exchangeJson(a, .{ .url = try c.endpoint(a, "/models?pageSize=1000") });
     out.raw = answer.raw;
     var list: std.ArrayList(Client.Model) = .empty;
-    for (json.array(json.at(answer.root, .{"models"}))) |item| {
-        const name = json.string(json.at(item, .{"name"})) orelse continue;
+    for (answer.root.get("models").items()) |item| {
+        const name = item.get("name").asString() orelse continue;
         // `models/gemini-...`: the part after the slash is what a request names.
         const id = if (std.mem.startsWith(u8, name, "models/")) name["models/".len..] else name;
-        try list.append(a, .{ .id = id, .name = json.string(json.at(item, .{"displayName"})) orelse id });
+        try list.append(a, .{ .id = id, .name = item.get("displayName").asString() orelse id });
     }
     out.items = list.items;
 }
@@ -460,7 +460,8 @@ test "the generateContent body" {
     const gpa = std.testing.allocator;
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    var b: json.Body = try .begin(&out.writer, null);
+    var w: Writer = .init(&out.writer, .{});
+    var b: json.Body = try .begin(gpa, &w, null);
     try writeChat(&b, .{
         .model = "gemini-3.5-flash",
         .system = "Be brief.",
@@ -482,9 +483,10 @@ test "Imagen and Veo put extra into parameters" {
     defer arena.deinit();
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
+    var w: Writer = .init(&out.writer, .{});
 
     const extra = try json.parseExtra(arena.allocator(), "{\"personGeneration\":\"allow_adult\"}");
-    var b: json.Body = try .begin(&out.writer, null);
+    var b: json.Body = try .begin(gpa, &w, null);
     try writeImagen(&b, .{ .model = "imagen-4.0-generate-001", .prompt = "a fox", .count = 2, .aspect_ratio = "16:9" }, extra);
     try b.end();
     try std.testing.expectEqualStrings(
@@ -492,7 +494,8 @@ test "Imagen and Veo put extra into parameters" {
     , out.written());
 
     out.clearRetainingCapacity();
-    b = try .begin(&out.writer, null);
+    w = .init(&out.writer, .{});
+    b = try .begin(gpa, &w, null);
     try writeVeo(&b, .{ .model = "veo-3.1-generate-preview", .prompt = "waves", .seconds = 8, .first_frame = .fromBytes("\x89PNG\r\n\x1a\n") }, null);
     try b.end();
     try std.testing.expectEqualStrings(

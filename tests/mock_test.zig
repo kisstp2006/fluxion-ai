@@ -355,7 +355,9 @@ test "OpenAI-shaped: a chat, a stream, the errors" {
         try testing.expectEqualStrings("Short.", answer.reasoning);
         try testing.expectEqual(ai.Finish.stop, answer.finish);
         try testing.expectEqual(@as(?u64, 20), answer.usage.input_tokens);
-        try testing.expect(std.mem.find(u8, answer.raw, "\"total_tokens\":22") != null);
+        var raw = try ai.json.parse(gpa, answer.raw, .{});
+        defer raw.deinit();
+        try testing.expectEqual(@as(?u32, 22), raw.root.at("/usage/total_tokens").asInt(u32));
     }
     {
         const stream = try client.stream(.{ .model = "mock-1", .messages = &.{.user("Szia!")} });

@@ -15,7 +15,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Value = std.json.Value;
+const Value = @import("fluxion_json").Value;
+const Writer = @import("fluxion_json").Writer;
 
 const Client = @import("../Client.zig");
 const Provider = @import("../Provider.zig");
@@ -68,10 +69,10 @@ pub fn streamOptions(c: *Client, a: Allocator, request: ChatRequest) !transport.
 fn writeChat(b: *json.Body, provider: *const Provider, request: ChatRequest, stream: bool) !void {
     try b.field("model", request.model);
     if (try b.key("messages")) {
-        try b.s.beginArray();
+        try b.w.beginArray();
         if (request.system) |system| try writeMessage(b, .system(system));
         for (request.messages) |message| try writeMessage(b, message);
-        try b.s.endArray();
+        try b.w.endArray();
     }
     try b.field(@tagName(provider.max_tokens_field), request.max_tokens);
     try b.field("temperature", request.temperature);
@@ -80,84 +81,83 @@ fn writeChat(b: *json.Body, provider: *const Provider, request: ChatRequest, str
     if (stream) {
         try b.field("stream", true);
         if (provider.stream_usage and try b.key("stream_options")) {
-            try b.s.beginObject();
+            try b.w.beginObject();
             try b.plain("include_usage", true);
-            try b.s.endObject();
+            try b.w.endObject();
         }
     }
 }
 
 fn writeMessage(b: *json.Body, message: Message) !void {
-    try b.s.beginObject();
+    try b.w.beginObject();
     try b.plain("role", @tagName(message.role));
     if (message.images.len == 0) {
         try b.plain("content", message.text);
     } else {
-        try b.s.objectField("content");
-        try b.s.beginArray();
+        try b.w.key("content");
+        try b.w.beginArray();
         for (message.images) |image| {
-            try b.s.beginObject();
+            try b.w.beginObject();
             try b.plain("type", "image_url");
-            try b.s.objectField("image_url");
-            try b.s.beginObject();
-            try b.s.objectField("url");
+            try b.w.key("image_url");
+            try b.w.beginObject();
+            try b.w.key("url");
             switch (image) {
                 .file => |file| try b.dataUrl(file.mime_type, file.bytes),
-                .url => |url| try b.s.write(url),
+                .url => |url| try b.w.writeString(url),
             }
-            try b.s.endObject();
-            try b.s.endObject();
+            try b.w.endObject();
+            try b.w.endObject();
         }
         if (message.text.len > 0) {
-            try b.s.beginObject();
+            try b.w.beginObject();
             try b.plain("type", "text");
             try b.plain("text", message.text);
-            try b.s.endObject();
+            try b.w.endObject();
         }
-        try b.s.endArray();
+        try b.w.endArray();
     }
-    try b.s.endObject();
+    try b.w.endObject();
 }
 
 pub fn parseChat(a: Allocator, root: Value, out: *Chat) error{ InvalidResponse, OutOfMemory }!void {
-    const choice = json.at(root, .{ "choices", 0 }) orelse return error.InvalidResponse;
-    const message = json.at(choice, .{"message"});
-    out.text = try contentText(a, json.at(message, .{"content"}));
+    const choice = root.at("/choices/0");
+    if (choice == .null) return error.InvalidResponse;
+    const message = choice.get("message");
+    out.text = try contentText(a, message.get("content"));
     out.reasoning = reasoningText(message) orelse "";
-    out.images = try messageImages(a, json.at(message, .{"images"}));
-    out.finish_reason = json.string(json.at(choice, .{"finish_reason"})) orelse "";
+    out.images = try messageImages(a, message.get("images"));
+    out.finish_reason = choice.get("finish_reason").asString() orelse "";
     out.finish = finishOf(out.finish_reason);
-    out.usage = usageOf(json.at(root, .{"usage"}));
-    out.model = json.string(json.at(root, .{"model"})) orelse "";
-    out.id = json.string(json.at(root, .{"id"})) orelse "";
+    out.usage = usageOf(root.get("usage"));
+    out.model = root.get("model").asString() orelse "";
+    out.id = root.get("id").asString() orelse "";
 }
 
 /// DeepSeek calls it `reasoning_content`, OpenRouter and some others
 /// `reasoning`.
-fn reasoningText(message: ?Value) ?[]const u8 {
-    return json.string(json.at(message, .{"reasoning_content"})) orelse
-        json.string(json.at(message, .{"reasoning"}));
+fn reasoningText(message: Value) ?[]const u8 {
+    return message.get("reasoning_content").asString() orelse message.get("reasoning").asString();
 }
 
 /// `content` is a string, or - from a few servers - an array of parts.
-fn contentText(a: Allocator, content: ?Value) Allocator.Error![]const u8 {
-    if (json.string(content)) |s| return s;
+fn contentText(a: Allocator, content: Value) Allocator.Error![]const u8 {
+    if (content.asString()) |s| return s;
     var text: std.ArrayList(u8) = .empty;
-    for (json.array(content)) |part| {
-        if (json.string(json.at(part, .{"text"}))) |t| try text.appendSlice(a, t);
+    for (content.items()) |part| {
+        if (part.get("text").asString()) |t| try text.appendSlice(a, t);
     }
     return text.items;
 }
 
 /// Pictures in a chat answer, the way OpenRouter sends a drawing model's:
 /// `images: [{ "image_url": { "url": "data:image/png;base64,..." } }]`.
-fn messageImages(a: Allocator, value: ?Value) error{ InvalidResponse, OutOfMemory }![]const GeneratedImage {
-    const items = json.array(value);
+fn messageImages(a: Allocator, value: Value) error{ InvalidResponse, OutOfMemory }![]const GeneratedImage {
+    const items = value.items();
     if (items.len == 0) return &.{};
     var list: std.ArrayList(GeneratedImage) = .empty;
     for (items) |item| {
-        const url = json.string(json.at(item, .{ "image_url", "url" })) orelse
-            json.string(json.at(item, .{"url"})) orelse continue;
+        const url = item.at("/image_url/url").asString() orelse item.get("url").asString() orelse continue;
         try list.append(a, try imageFromUrl(a, url));
     }
     return list.items;
@@ -192,10 +192,10 @@ pub fn finishOf(reason: []const u8) Finish {
     return .other;
 }
 
-fn usageOf(v: ?Value) Usage {
+fn usageOf(v: Value) Usage {
     return .{
-        .input_tokens = json.count(json.at(v, .{"prompt_tokens"})) orelse json.count(json.at(v, .{"input_tokens"})),
-        .output_tokens = json.count(json.at(v, .{"completion_tokens"})) orelse json.count(json.at(v, .{"output_tokens"})),
+        .input_tokens = json.count(v.get("prompt_tokens")) orelse json.count(v.get("input_tokens")),
+        .output_tokens = json.count(v.get("completion_tokens")) orelse json.count(v.get("output_tokens")),
     };
 }
 
@@ -212,27 +212,28 @@ pub fn streamEvent(s: *ChatStream, a: Allocator, event: sse.Event) !void {
     };
     // OpenRouter, and others relaying a provider, report its failures here,
     // after the 200 has already gone out.
-    if (json.at(root, .{"error"}) != null) {
+    if (root.get("error") != .null) {
         return s.fail(error.GenerationFailed, "{s}", .{json.errorMessage(root) orelse data});
     }
-    if (json.string(json.at(root, .{"model"}))) |model| try s.setModel(model);
-    if (json.string(json.at(root, .{"id"}))) |id| try s.setId(id);
-    if (json.isObject(json.at(root, .{"usage"}))) s.usage = usageOf(json.at(root, .{"usage"}));
+    if (root.get("model").asString()) |model| try s.setModel(model);
+    if (root.get("id").asString()) |id| try s.setId(id);
+    if (root.get("usage") == .object) s.usage = usageOf(root.get("usage"));
 
-    const choice = json.at(root, .{ "choices", 0 }) orelse return;
-    const delta = json.at(choice, .{"delta"});
+    const choice = root.at("/choices/0");
+    if (choice == .null) return;
+    const delta = choice.get("delta");
     if (reasoningText(delta)) |reasoning| if (reasoning.len > 0) try s.emit(.{ .reasoning = reasoning });
-    const content = try contentText(a, json.at(delta, .{"content"}));
+    const content = try contentText(a, delta.get("content"));
     if (content.len > 0) try s.emit(.{ .text = content });
-    for (json.array(json.at(delta, .{"images"}))) |item| {
-        const url = json.string(json.at(item, .{ "image_url", "url" })) orelse continue;
+    for (delta.get("images").items()) |item| {
+        const url = item.at("/image_url/url").asString() orelse continue;
         const image = imageFromUrl(a, url) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.InvalidResponse => return s.fail(error.InvalidResponse, "a picture in the stream that does not decode", .{}),
         };
         try s.emitImage(image);
     }
-    if (json.string(json.at(choice, .{"finish_reason"}))) |reason| try s.setFinish(reason, finishOf(reason));
+    if (choice.get("finish_reason").asString()) |reason| try s.setFinish(reason, finishOf(reason));
 }
 
 // ---------------------------------------------------------------------------
@@ -270,20 +271,20 @@ pub fn images(c: *Client, a: Allocator, request: ImageRequest, out: *Images) !vo
     out.raw = answer.raw;
 
     var list: std.ArrayList(GeneratedImage) = .empty;
-    for (json.array(json.at(answer.root, .{"data"}))) |item| {
+    for (answer.root.get("data").items()) |item| {
         var image: GeneratedImage = undefined;
-        if (json.string(json.at(item, .{"b64_json"}))) |b64| {
+        if (item.get("b64_json").asString()) |b64| {
             const bytes = decode(a, b64) catch |err| return c.invalid(err, answer.root, "a picture that is not base64");
             image = .{ .bytes = bytes, .mime_type = media.sniff(bytes) orelse "image/png" };
-        } else if (json.string(json.at(item, .{"url"}))) |url| {
+        } else if (item.get("url").asString()) |url| {
             image = imageFromUrl(a, url) catch |err| return c.invalid(err, answer.root, "a picture that is not base64");
         } else continue;
-        image.revised_prompt = json.string(json.at(item, .{"revised_prompt"}));
+        image.revised_prompt = item.get("revised_prompt").asString();
         try list.append(a, image);
     }
     if (list.items.len == 0) return c.invalid(error.InvalidResponse, answer.root, "an answer with no pictures in it");
     out.images = list.items;
-    out.usage = usageOf(json.at(answer.root, .{"usage"}));
+    out.usage = usageOf(answer.root.get("usage"));
 }
 
 fn writeImages(b: *json.Body, request: ImageRequest) !void {
@@ -354,19 +355,18 @@ fn writeSora(b: *json.Body, request: VideoRequest) !void {
     }
     try b.field("size", request.size);
     if (try b.key("input_reference")) {
-        try b.s.beginObject();
+        try b.w.beginObject();
         try b.plain("image_url", request.first_frame.?.url);
-        try b.s.endObject();
+        try b.w.endObject();
     }
 }
 
 fn parseSora(c: *Client, a: Allocator, root: Value, out: *Video) !void {
-    out.id = json.string(json.at(root, .{"id"})) orelse
+    out.id = root.get("id").asString() orelse
         return c.invalid(error.InvalidResponse, root, "a video with no id");
-    out.status = .fromWord(json.string(json.at(root, .{"status"})) orelse "queued");
-    if (json.integer(json.at(root, .{"progress"}))) |progress| out.progress = @intCast(std.math.clamp(progress, 0, 100));
-    out.message = json.string(json.at(root, .{ "error", "message" })) orelse
-        json.string(json.at(root, .{"error"})) orelse "";
+    out.status = .fromWord(root.get("status").asString() orelse "queued");
+    if (json.integer(root.get("progress"))) |progress| out.progress = @intCast(std.math.clamp(progress, 0, 100));
+    out.message = root.at("/error/message").asString() orelse root.get("error").asString() orelse "";
     if (out.status == .completed) {
         out.url = try c.endpoint(a, try std.fmt.allocPrint(a, "/videos/{s}/content", .{try pathSegment(a, out.id)}));
     }
@@ -380,8 +380,8 @@ fn startXai(c: *Client, a: Allocator, request: VideoRequest, out: *Video) !void 
         .payload = .{ .json = body },
     });
     out.raw = answer.raw;
-    const id = json.string(json.at(answer.root, .{"request_id"})) orelse
-        json.string(json.at(answer.root, .{"id"})) orelse
+    const id = answer.root.get("request_id").asString() orelse
+        answer.root.get("id").asString() orelse
         return c.invalid(error.InvalidResponse, answer.root, "a video with no request id");
     try parseXai(a, answer.root, id, out);
 }
@@ -394,24 +394,23 @@ fn writeXai(b: *json.Body, request: VideoRequest) !void {
     try b.field("resolution", request.resolution);
     if (request.first_frame) |frame| {
         if (try b.key("image")) {
-            try b.s.beginObject();
-            try b.s.objectField("url");
+            try b.w.beginObject();
+            try b.w.key("url");
             switch (frame) {
-                .url => |url| try b.s.write(url),
+                .url => |url| try b.w.writeString(url),
                 .file => |file| try b.dataUrl(file.mime_type, file.bytes),
             }
-            try b.s.endObject();
+            try b.w.endObject();
         }
     }
 }
 
 fn parseXai(a: Allocator, root: Value, id: []const u8, out: *Video) !void {
     out.id = try a.dupe(u8, id);
-    out.url = json.string(json.at(root, .{ "video", "url" })) orelse json.string(json.at(root, .{"url"}));
-    out.status = if (json.string(json.at(root, .{"status"}))) |word| .fromWord(word) else if (out.url != null) .completed else .queued;
-    if (json.integer(json.at(root, .{"progress"}))) |progress| out.progress = @intCast(std.math.clamp(progress, 0, 100));
-    out.message = json.string(json.at(root, .{ "error", "message" })) orelse
-        json.string(json.at(root, .{"error"})) orelse "";
+    out.url = root.at("/video/url").asString() orelse root.get("url").asString();
+    out.status = if (root.get("status").asString()) |word| .fromWord(word) else if (out.url != null) .completed else .queued;
+    if (json.integer(root.get("progress"))) |progress| out.progress = @intCast(std.math.clamp(progress, 0, 100));
+    out.message = root.at("/error/message").asString() orelse root.get("error").asString() orelse "";
 }
 
 // ---------------------------------------------------------------------------
@@ -422,9 +421,9 @@ pub fn models(c: *Client, a: Allocator, out: *Client.Models) !void {
     const answer = try c.exchangeJson(a, .{ .url = try c.endpoint(a, "/models") });
     out.raw = answer.raw;
     var list: std.ArrayList(Client.Model) = .empty;
-    for (json.array(json.at(answer.root, .{"data"}))) |item| {
-        const id = json.string(json.at(item, .{"id"})) orelse continue;
-        try list.append(a, .{ .id = id, .name = json.string(json.at(item, .{"name"})) orelse id });
+    for (answer.root.get("data").items()) |item| {
+        const id = item.get("id").asString() orelse continue;
+        try list.append(a, .{ .id = id, .name = item.get("name").asString() orelse id });
     }
     out.items = list.items;
 }
@@ -514,9 +513,10 @@ test "the chat body, as OpenAI and as a compatible server" {
     };
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
+    var w: Writer = .init(&out.writer, .{});
     const openai_provider: Provider = .openai("k");
     const deepseek_provider: Provider = .deepseek("k");
-    var b: json.Body = try .begin(&out.writer, null);
+    var b: json.Body = try .begin(gpa, &w, null);
     try writeChat(&b, &openai_provider, request, true);
     try b.end();
     try std.testing.expectEqualStrings(
@@ -524,7 +524,8 @@ test "the chat body, as OpenAI and as a compatible server" {
     , out.written());
 
     out.clearRetainingCapacity();
-    b = try .begin(&out.writer, null);
+    w = .init(&out.writer, .{});
+    b = try .begin(gpa, &w, null);
     try writeChat(&b, &deepseek_provider, .{ .model = "deepseek-flash", .messages = &.{.user("hi")}, .max_tokens = 5 }, false);
     try b.end();
     try std.testing.expectEqualStrings(

@@ -13,6 +13,7 @@ Words, pictures and video from whoever makes them. For Zig 0.16.
 | `Failure` | What went wrong, in the provider's own words. |
 | `media` | A file as bytes and a MIME type, named from its first few bytes. |
 | `sse` | The server-sent events parser the streams are read with. |
+| `json` | [fluxion-json](https://github.com/kisstp2006/fluxion-json), which every request is written with and every answer read with - for reading `raw` yourself. |
 
 ```zig
 const ai = @import("fluxion_ai");
@@ -29,10 +30,11 @@ defer answer.deinit();
 std.debug.print("{s}\n", .{answer.text});
 ```
 
-Nothing from outside the standard library: `std.http.Client` does the
-talking, over `std.crypto.tls` with the system's certificates, so it runs
-wherever Zig's standard library reaches a network - Windows, Linux, macOS,
-the BSDs, on x86 and ARM alike.
+Nothing from outside the standard library but fluxion-json, which writes
+every request and reads every answer: `std.http.Client` does the talking,
+over `std.crypto.tls` with the system's certificates, so it runs wherever
+Zig's standard library reaches a network - Windows, Linux, macOS, the BSDs,
+on x86 and ARM alike.
 
 ## Three shapes, one set of types
 
@@ -193,7 +195,8 @@ The types cover what every provider shares. For the rest:
   `.extra = "{\"reasoning_effort\":\"low\"}"`, DeepSeek's
   `{"thinking":{"type":"enabled"}}`, Gemini's `safetySettings`, tools.
 - **`raw`** on every answer is the body as it came: tool calls, citations,
-  log probabilities, to be read with `std.json`.
+  log probabilities, to be read with `ai.json` -
+  `ai.json.parse(gpa, answer.raw, .{})`, then `doc.root.at("/choices/0/logprobs")`.
 - **`Client.call`** sends anything to any endpoint with the provider's key,
   headers and error handling: embeddings, OpenAI's Responses API, a
   provider's own extras.
@@ -267,5 +270,6 @@ still names the address that refused.
 
 [Boost Software License 1.0](LICENSE): use it, change it, ship it, in
 anything. The copyright notice and the licence text travel with the source;
-a binary built from it carries nothing. The examples' fluxion-image is
+a binary built from it carries nothing. fluxion-json, which the library
+itself uses, is CC0-1.0 and asks for nothing; the examples' fluxion-image is
 BSD-2-Clause, and is fetched for the examples only.

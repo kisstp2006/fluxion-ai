@@ -8,11 +8,13 @@ pub fn build(b: *std.Build) void {
 
     // The importable module. Consumers do:
     //   const ai = @import("fluxion_ai");
-    // It needs nothing but the standard library.
+    // Besides the standard library it needs fluxion-json, and nothing else.
+    const json_dep = b.dependency("fluxion_json", .{ .target = target, .optimize = optimize });
     const mod = b.addModule("fluxion_ai", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "fluxion_json", .module = json_dep.module("fluxion_json") }},
     });
 
     // zig build test: the library's own tests, then the whole way down

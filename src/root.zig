@@ -2,7 +2,7 @@
 
 //! Fluxion AI - words, pictures and video from whoever makes them, over
 //! HTTP, from Zig 0.16. On every target `std.http` reaches, with nothing
-//! from outside the standard library.
+//! from outside the standard library but fluxion-json.
 //!
 //! ```zig
 //! const ai = @import("fluxion_ai");
@@ -78,6 +78,10 @@ pub const Failure = transport.Failure;
 /// The server-sent events parser the streams are read with, for a program
 /// that reads some other stream.
 pub const sse = @import("sse.zig");
+
+/// fluxion-json, which every request is written with and every answer read
+/// with: `ai.json.parse(gpa, answer.raw, .{})` for what a `Chat` does not carry.
+pub const json = @import("fluxion_json");
 
 const chat = @import("chat.zig");
 const image = @import("image.zig");

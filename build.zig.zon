@@ -6,6 +6,10 @@
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x7e1bbbe035c7efd2, // Changing this has security and trust implications.
     .dependencies = .{
+        .fluxion_json = .{
+            .url = "git+https://github.com/kisstp2006/fluxion-json#7e5669d3e6d664e8e66a758dfc3d7a051d2995fe",
+            .hash = "fluxion_json-0.1.0-sFlLPSZmBAClbMzerd_OsFdPWO9BhS91ubypyFi7IutG",
+        },
         // The examples look at the pictures that come back; the library
         // never does. Lazy, and asked for only when this is the package being
         // built, so a program that depends on fluxion-ai never fetches it.

@@ -24,7 +24,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
-const Value = std.json.Value;
+const fluxion_json = @import("fluxion_json");
+const Value = fluxion_json.Value;
 
 const Provider = @import("Provider.zig");
 const ChatStream = @import("ChatStream.zig");
@@ -307,16 +308,15 @@ pub fn failError(c: *Client, err: anytype, comptime fmt: []const u8, args: anyty
 
 /// An answer that did not have what the API promises. The provider's own
 /// message wins, where there is one in the body.
-pub fn invalid(c: *Client, err: error{ InvalidResponse, OutOfMemory }, root: ?Value, what: []const u8) error{ InvalidResponse, OutOfMemory } {
+pub fn invalid(c: *Client, err: error{ InvalidResponse, OutOfMemory }, root: Value, what: []const u8) error{ InvalidResponse, OutOfMemory } {
     if (err == error.OutOfMemory) return error.OutOfMemory;
-    const message = if (root) |r| json.errorMessage(r) else null;
-    c.failure.print(0, "{s}", .{message orelse what});
+    c.failure.print(0, "{s}", .{json.errorMessage(root) orelse what});
     return error.InvalidResponse;
 }
 
 /// The members of a request's `extra`, or a failure that says it is not a
 /// JSON object.
-pub fn extraMembers(c: *Client, a: Allocator, extra: ?[]const u8) !?std.json.ObjectMap {
+pub fn extraMembers(c: *Client, a: Allocator, extra: ?[]const u8) !?*fluxion_json.Object {
     return json.parseExtra(a, extra) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.InvalidExtra => c.fail(0, error.InvalidExtra, "`extra` is not a JSON object: {s}", .{extra.?}),
@@ -327,11 +327,7 @@ pub fn extraMembers(c: *Client, a: Allocator, extra: ?[]const u8) !?std.json.Obj
 /// `extra` merged in.
 pub fn jsonBody(c: *Client, a: Allocator, extra: ?[]const u8, comptime write: anytype, args: anytype) ![]const u8 {
     const members = try c.extraMembers(a, extra);
-    var out: Io.Writer.Allocating = .init(a);
-    var body = json.Body.begin(&out.writer, members) catch return error.OutOfMemory;
-    @call(.auto, write, .{&body} ++ args) catch return error.OutOfMemory;
-    body.end() catch return error.OutOfMemory;
-    return out.written();
+    return json.bodyText(a, c.gpa, members, write, args) catch error.OutOfMemory;
 }
 
 pub const JsonAnswer = struct {

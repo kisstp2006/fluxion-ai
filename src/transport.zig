@@ -17,6 +17,8 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const http = std.http;
 const Uri = std.Uri;
+const fluxion_json = @import("fluxion_json");
+const Value = fluxion_json.Value;
 
 const Client = @import("Client.zig");
 const Provider = @import("Provider.zig");
@@ -129,15 +131,12 @@ pub const Error = error{
 /// OpenAI's 429 that means the money has run out rather than the patience,
 /// and Google's 400 that means the key is wrong, which everyone else calls
 /// a 401.
-pub fn statusError(status: http.Status, body_root: ?std.json.Value) Error {
+pub fn statusError(status: http.Status, body_root: Value) Error {
     return switch (@intFromEnum(status)) {
         400 => {
-            const root = if (body_root) |r| switch (r) {
-                .array => |a| if (a.items.len > 0) a.items[0] else r,
-                else => r,
-            } else return error.BadRequest;
-            for (json.array(json.at(root, .{ "error", "details" }))) |detail| {
-                const reason = json.string(json.at(detail, .{"reason"})) orelse continue;
+            const root = if (body_root == .array) body_root.get(0) else body_root;
+            for (root.at("/error/details").items()) |detail| {
+                const reason = detail.get("reason").asString() orelse continue;
                 if (std.mem.eql(u8, reason, "API_KEY_INVALID")) return error.Unauthorized;
             }
             return error.BadRequest;
@@ -148,8 +147,8 @@ pub fn statusError(status: http.Status, body_root: ?std.json.Value) Error {
         403 => error.Forbidden,
         404 => error.NotFound,
         429 => {
-            const code = json.string(json.at(body_root, .{ "error", "code" })) orelse
-                json.string(json.at(body_root, .{ "error", "type" })) orelse "";
+            const code = body_root.at("/error/code").asString() orelse
+                body_root.at("/error/type").asString() orelse "";
             if (std.mem.eql(u8, code, "insufficient_quota")) return error.OutOfCredit;
             return error.RateLimited;
         },
@@ -319,8 +318,8 @@ pub const Exchange = struct {
             var scratch: std.heap.ArenaAllocator = .init(client.gpa);
             defer scratch.deinit();
             const body = ex.reader.allocRemaining(scratch.allocator(), .limited(64 * 1024)) catch "";
-            const root: ?std.json.Value = json.parse(scratch.allocator(), body) catch null;
-            const text = if (root) |r| json.errorMessage(r) orelse body else body;
+            const root: Value = json.parse(scratch.allocator(), body) catch .null;
+            const text = json.errorMessage(root) orelse body;
             if (text.len > 0) {
                 client.failure.set(@intFromEnum(status), text);
             } else {
@@ -457,10 +456,13 @@ pub const Form = struct {
     }
 
     pub fn field(form: *Form, name: []const u8, value: []const u8) Io.Writer.Error!void {
-        const w = &form.out.writer;
-        try w.print("--{s}\r\ncontent-disposition: form-data; name=\"{s}\"\r\n\r\n", .{ &form.boundary, name });
-        try w.writeAll(value);
-        try w.writeAll("\r\n");
+        try form.fieldHead(name);
+        try form.out.writer.writeAll(value);
+        try form.out.writer.writeAll("\r\n");
+    }
+
+    fn fieldHead(form: *Form, name: []const u8) Io.Writer.Error!void {
+        try form.out.writer.print("--{s}\r\ncontent-disposition: form-data; name=\"{s}\"\r\n\r\n", .{ &form.boundary, name });
     }
 
     pub fn file(form: *Form, name: []const u8, filename: []const u8, mime_type: []const u8, bytes: []const u8) Io.Writer.Error!void {
@@ -472,21 +474,15 @@ pub const Form = struct {
 
     /// Every member of `extra` as a field of its own: strings as they are,
     /// anything else as its JSON.
-    pub fn fields(form: *Form, extra: ?std.json.ObjectMap) Io.Writer.Error!void {
+    pub fn fields(form: *Form, extra: ?*fluxion_json.Object) Io.Writer.Error!void {
         const members = extra orelse return;
-        var it = members.iterator();
-        while (it.next()) |entry| {
-            switch (entry.value_ptr.*) {
-                .string => |s| try form.field(entry.key_ptr.*, s),
-                .number_string => |s| try form.field(entry.key_ptr.*, s),
-                else => |v| {
-                    var buffer: [4096]u8 = undefined;
-                    var w: Io.Writer = .fixed(&buffer);
-                    std.json.Stringify.value(v, .{}, &w) catch continue;
-                    try form.field(entry.key_ptr.*, w.buffered());
-                },
-            }
-        }
+        for (members.keys(), members.values()) |name, value| switch (value) {
+            .string => |s| try form.field(name, s),
+            else => {
+                try form.fieldHead(name);
+                try form.out.writer.print("{f}\r\n", .{value});
+            },
+        };
     }
 
     /// The closing boundary. Returns the body.
@@ -552,15 +548,21 @@ test Failure {
 
 test Form {
     const gpa = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
     var form: Form = .init(gpa, std.testing.io);
     defer form.deinit();
     try form.field("model", "sora-2");
     try form.file("input_reference", "first.png", "image/png", "\x89PNG");
+    try form.fields(try json.parseExtra(arena.allocator(), "{\"n\":2,\"background\":\"transparent\",\"style\":{\"a\":[1,2.5]}}"));
     const body = try form.finish();
     const boundary = &form.boundary;
     try std.testing.expect(std.mem.startsWith(u8, body, "--fluxion-ai-"));
     try std.testing.expect(std.mem.find(u8, body, "name=\"model\"\r\n\r\nsora-2\r\n") != null);
     try std.testing.expect(std.mem.find(u8, body, "filename=\"first.png\"\r\ncontent-type: image/png\r\n\r\n\x89PNG\r\n") != null);
+    try std.testing.expect(std.mem.find(u8, body, "name=\"n\"\r\n\r\n2\r\n") != null);
+    try std.testing.expect(std.mem.find(u8, body, "name=\"background\"\r\n\r\ntransparent\r\n") != null);
+    try std.testing.expect(std.mem.find(u8, body, "name=\"style\"\r\n\r\n{\"a\":[1,2.5]}\r\n") != null);
     try std.testing.expect(std.mem.endsWith(u8, body, "--\r\n"));
     try std.testing.expect(std.mem.find(u8, form.contentType(), boundary) != null);
 }
@@ -574,10 +576,10 @@ test statusError {
         \\"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID","domain":"googleapis.com"}]}}
     );
     try std.testing.expectEqual(error.Unauthorized, statusError(.bad_request, google));
-    try std.testing.expectEqual(error.BadRequest, statusError(.bad_request, null));
+    try std.testing.expectEqual(error.BadRequest, statusError(.bad_request, .null));
     const quota = try json.parse(a, "{\"error\":{\"message\":\"x\",\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\"}}");
     try std.testing.expectEqual(error.OutOfCredit, statusError(.too_many_requests, quota));
-    try std.testing.expectEqual(error.RateLimited, statusError(.too_many_requests, null));
-    try std.testing.expectEqual(error.ServerError, statusError(@enumFromInt(529), null));
-    try std.testing.expectEqual(error.OutOfCredit, statusError(.payment_required, null));
+    try std.testing.expectEqual(error.RateLimited, statusError(.too_many_requests, .null));
+    try std.testing.expectEqual(error.ServerError, statusError(@enumFromInt(529), .null));
+    try std.testing.expectEqual(error.OutOfCredit, statusError(.payment_required, .null));
 }
