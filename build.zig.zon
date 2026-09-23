@@ -7,8 +7,8 @@
     .fingerprint = 0x7e1bbbe035c7efd2, // Changing this has security and trust implications.
     .dependencies = .{
         .fluxion_json = .{
-            .url = "git+https://github.com/kisstp2006/fluxion-json#1d8cb5bb6184636dc3dd0b07a5b4fbe3af41a8b4",
-            .hash = "fluxion_json-0.1.0-sFlLPe9uBQDchSsbl8_C6tWxkEDIgARGF-SziCP3_P_h",
+            .url = "git+https://github.com/kisstp2006/fluxion-json#5b156eea39ad6f1ad1642c971008a0bbbbd21c0f",
+            .hash = "fluxion_json-0.1.0-sFlLPa1yBQCYVZD-64nMnRtnhjH6P3xbnq1ftDyIs1DB",
         },
         // The examples look at the pictures that come back; the library
         // never does. Lazy, and asked for only when this is the package being
